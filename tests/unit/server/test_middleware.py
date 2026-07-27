@@ -112,6 +112,29 @@ def test_localhost_cors_middleware_is_allowed_origin_non_localhost(app):
         assert 'access-control-allow-origin' not in response.headers
 
 
+def test_localhost_cors_middleware_is_allowed_origin_localhost_with_config(app):
+    """Test that localhost origins are allowed even when explicit origins are configured."""
+    mock_config = MagicMock()
+    mock_config.permitted_cors_origins = ['https://example.com']
+    with patch(
+        'openhands.app_server.middleware.get_global_config', return_value=mock_config
+    ):
+        app.add_middleware(LocalhostCORSMiddleware)
+        client = TestClient(app)
+
+        response = client.get('/test', headers={'Origin': 'http://localhost:3000'})
+        assert response.status_code == 200
+        assert (
+            response.headers['access-control-allow-origin'] == 'http://localhost:3000'
+        )
+
+        response = client.get('/test', headers={'Origin': 'http://127.0.0.1:8080'})
+        assert response.status_code == 200
+        assert (
+            response.headers['access-control-allow-origin'] == 'http://127.0.0.1:8080'
+        )
+
+
 def test_localhost_cors_middleware_missing_origin(app):
     """Test behavior when Origin header is missing."""
     mock_config = MagicMock()

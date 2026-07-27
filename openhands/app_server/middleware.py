@@ -35,15 +35,17 @@ class LocalhostCORSMiddleware(CORSMiddleware):
         )
 
     def is_allowed_origin(self, origin: str) -> bool:
+        parsed = urlparse(origin) if origin else None
+        hostname = parsed.hostname if parsed else ''
+
+        # Allow any localhost/127.0.0.1 origin regardless of port.
+        # This is necessary when the app frontend is served from localhost
+        # but the backend has explicit permitted origins configured.
+        if hostname in ['localhost', '127.0.0.1']:
+            return True
+
         if origin and not self.allow_origins and not self.allow_origin_regex:
-            parsed = urlparse(origin)
-            hostname = parsed.hostname or ''
-
-            # Allow any localhost/127.0.0.1 origin regardless of port
-            if hostname in ['localhost', '127.0.0.1']:
-                return True
-
-            # Allow any origin when no specific origins are configured (development mode)
+            # Allow any origin when no specific origins are configured
             # WARNING: This disables CORS protection. Use explicit CORS origins in production.
             logging.getLogger(__name__).warning(
                 f'No CORS origins configured, allowing origin: {origin}. '

@@ -51,6 +51,7 @@ import PendingMessageService from "#/api/pending-message-service/pending-message
 import { useConversationStore } from "#/stores/conversation-store";
 import { classifyBudgetOrCreditError, trackError } from "#/utils/error-handler";
 import { useReadConversationFile } from "#/hooks/mutation/use-read-conversation-file";
+import { useBatchedEventDispatch } from "#/hooks/use-batched-event-dispatch";
 import useMetricsStore from "#/stores/metrics-store";
 import { I18nKey } from "#/i18n/declaration";
 import { useConversationHistory } from "#/hooks/query/use-conversation-history";
@@ -116,6 +117,11 @@ export function ConversationWebSocketProvider({
 
   const queryClient = useQueryClient();
   const { addEvent } = useEventStore();
+  // Coalesce per-token StreamingDeltaEvents before they hit the store -- see
+  // use-batched-event-dispatch.ts. Separate instances per connection: main
+  // and planning are independent streams and must not be merged together.
+  const dispatchMainEvent = useBatchedEventDispatch(addEvent);
+  const dispatchPlanningEvent = useBatchedEventDispatch(addEvent);
   const { setErrorMessage, removeErrorMessage } = useErrorMessageStore();
   const { removeOptimisticUserMessage } = useOptimisticUserMessageStore();
   const { setExecutionStatus } = useV1ConversationStateStore();
@@ -394,7 +400,7 @@ export function ConversationWebSocketProvider({
 
         // Use type guard to validate v1 event structure
         if (isV1Event(event)) {
-          addEvent(event);
+          dispatchMainEvent(event);
 
           // Handle displayable error events - show error banner
           // AgentErrorEvent errors are displayed inline in the chat, not as banners
@@ -550,7 +556,7 @@ export function ConversationWebSocketProvider({
       }
     },
     [
-      addEvent,
+      dispatchMainEvent,
       isLoadingHistoryMain,
       expectedEventCountMain,
       setErrorMessage,
@@ -590,7 +596,7 @@ export function ConversationWebSocketProvider({
             ...event,
             isFromPlanningAgent: true,
           };
-          addEvent(eventWithPlanningFlag);
+          dispatchPlanningEvent(eventWithPlanningFlag);
 
           // Handle displayable error events - show error banner
           // AgentErrorEvent errors are displayed inline in the chat, not as banners
@@ -730,7 +736,7 @@ export function ConversationWebSocketProvider({
       }
     },
     [
-      addEvent,
+      dispatchPlanningEvent,
       isLoadingHistoryPlanning,
       expectedEventCountPlanning,
       setErrorMessage,

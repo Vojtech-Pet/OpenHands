@@ -1126,6 +1126,23 @@ async def batch_get_app_conversation_start_tasks(
     return start_tasks
 
 
+@router.get('/{conversation_id}')
+async def get_app_conversation_by_id(
+    conversation_id: UUID,
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+) -> AppConversation:
+    """Get a single sandboxed conversation by its UUID."""
+    conversation = await app_conversation_service.get_app_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Conversation {conversation_id} not found',
+        )
+    return conversation
+
+
 @router.get('/{conversation_id}/file')
 async def read_conversation_file(
     conversation_id: UUID,
