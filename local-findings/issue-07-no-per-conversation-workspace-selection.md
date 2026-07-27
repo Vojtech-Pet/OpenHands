@@ -1,67 +1,107 @@
 <!--
-This one is more of a feature request than a bug -- consider filing under
-feature_request.yml, or raising in Slack #proj-gui / #proj-runtime first per
-CONTRIBUTING.md, since it's an architectural addition, not a report.
+READY TO SUBMIT: copy the section below the line into
+https://github.com/OpenHands/OpenHands/issues/new?template=feature_request.yml
 -->
 
-# [Feature Request]: no way to select which host directory to mount per conversation -- workspace volumes are fixed at server startup
+# [Feature]: allow selecting which workspace/project a conversation mounts, via a server-side allow-list of named project roots
 
-**Summary**
+**Problem or Use Case**
 
-`POST /api/v1/app-conversations` (and the underlying
-`DockerSandboxService.start_sandbox()`) has no parameter for which host
-directory to bind-mount as the workspace. The mount is entirely determined
-by `SANDBOX_VOLUMES`, read once when the agent-server process itself
-starts, and baked into every sandbox it creates thereafter. Confirmed by
-reading the actual volume-construction code, not inferred:
+There is currently no way to choose which host directory a conversation's
+sandbox mounts as its workspace, except by setting `SANDBOX_VOLUMES` when
+the agent-server process itself starts, which then applies to every
+sandbox that server creates for as long as it runs. Confirmed by reading
+`DockerSandboxService.start_sandbox()` directly (not inferred): it builds
+`volumes` from `self.mounts`, a constructor-time attribute, and neither
+`start_sandbox(sandbox_spec_id, sandbox_id)` nor `SandboxSpecInfo` (image,
+command, env, working_dir) carry any mount override. `AppConversationStartRequest`
+has no workspace/mount field either.
 
-```python
-# docker_sandbox_service.py, start_sandbox()
-volumes = {
-    mount.host_path: {'bind': mount.container_path, 'mode': mount.mode}
-    for mount in self.mounts
-}
-```
+This is a structural limitation, not just a missing convenience, for
+several real use cases:
+- **Desktop/native clients**: a client naturally wants "open project X" to
+  be a per-conversation choice, the way an IDE switches projects without
+  restarting the whole application. Today that requires editing an env var
+  and restarting the entire agent-server process.
+- **Multi-project interfaces**: a UI that lists several local projects and
+  lets a user start a conversation against whichever one they pick has no
+  API surface to act on that choice.
+- **Parallel conversations against different projects**: since the mount
+  set is fixed for the whole server process, you cannot run one
+  conversation against project A and another against project B from the
+  same running server — every sandbox that server creates shares the same
+  mounts.
+- **Project isolation**: there's no way to scope a single conversation to
+  see only one project's files; if multiple projects are mounted, every
+  sandbox sees all of them.
+- **Multi-user servers**: a server used by more than one person/team has no
+  way to give different conversations different, isolated workspaces —
+  everyone gets whatever the operator mounted at startup.
 
-`self.mounts` is a `DockerSandboxService` constructor-time attribute.
-`start_sandbox(sandbox_spec_id, sandbox_id)` takes no mounts/volumes
-argument at all. `SandboxSpecInfo` (what `sandbox_spec_id` selects between)
-only carries `id` (Docker image), `command`, `initial_env`, and
-`working_dir` — no mount information either.
+**Proposed Solution**
 
-**Why this matters for a desktop client**
+**Not** proposing that the API accept an arbitrary client-supplied host
+path — that would be a real security regression for multi-tenant
+deployments (OpenHands Cloud): a caller who isn't the server operator
+getting to name any host path would be an host-filesystem escape, not a
+convenience feature. The trust boundary that matters is "who configured
+the mount," not "who started the conversation," and those are different
+people in a multi-tenant deployment.
 
-A desktop client naturally wants "open project X" to be a per-conversation
-choice, the same way an IDE lets you switch projects without restarting the
-whole application. As things stand, switching which local project OpenHands
-can see requires changing the `SANDBOX_VOLUMES` environment variable and
-restarting the entire agent-server process -- there's no way to do this
-from a running client, and no way to run conversations against two
-different local projects concurrently from the same server instance
-(everything the server starts shares the same fixed mount set).
+Instead: the server operator pre-registers a set of named, allow-listed
+project roots (e.g. an extension of `SandboxSpecInfo`, or a small new
+`WorkspaceRoot { name, host_path }` registry, configured the same way
+`SANDBOX_VOLUMES` is today — an operator-controlled, deploy-time
+allow-list). At conversation-creation time, the client supplies the *name*
+of a pre-registered root (not a path), and the server resolves it to the
+actual mount internally. A single-user local deployment can register as
+many named roots as the user wants (effectively "one per project"); a
+multi-tenant deployment can register none, or scope names per API key/user,
+with the existing fixed-mount behavior remaining the default when no name
+is given (fully backward compatible).
 
-**Expected Behavior**
+**Alternatives Considered**
 
-Either:
-- `AppConversationStartRequest` (or an equivalent) accepts a per-request
-  mount/workspace path, applied only to that conversation's sandbox
-  container, or
-- `SandboxSpecInfo` carries mount information, so different "specs" can
-  represent different pre-registered projects and `sandbox_spec_id`
-  becomes the mechanism for "which project" as well as "which image."
+- Restarting the agent-server process with different `SANDBOX_VOLUMES` per
+  project: works, but means no two projects can be active at once from the
+  same server, and switching projects requires tearing down every existing
+  conversation.
+- Running one agent-server process per project (each with its own fixed
+  mount): works around the limitation at the cost of one full server
+  process (and port, and resource footprint) per project, which doesn't
+  scale for a desktop client meant to manage many small projects.
+- Accepting an arbitrary client-supplied host path directly: rejected —
+  see the security note above.
 
-**Actual Behavior**
+**Priority / Severity**: High — Significant impact on productivity (blocks
+building a proper multi-project desktop/GUI client without either
+per-project server processes or manual restarts)
 
-Workspace selection is a deploy-time environment variable, not a runtime,
-per-conversation, or per-client API surface.
+**Estimated Scope**: Large - Significant feature requiring architecture
+changes (touches `SandboxSpecInfo`/registry, `start_sandbox()`,
+`AppConversationStartRequest`, and whatever admin/config surface registers
+the allow-list)
+
+**Feature Area**: File system / Workspace management
+
+**Technical Implementation Ideas**
+
+- Extend `SandboxSpecInfo` (or add a sibling model) with a named,
+  operator-registered root: `{ name: str, host_path: str }`, configured at
+  deploy time the same way `SANDBOX_VOLUMES` is today (env var, config
+  file, or a small admin API gated separately from conversation creation).
+- `AppConversationStartRequest` gains an optional `workspace_name: str`
+  field; when set, the server resolves it against the registry and mounts
+  that root; when unset, falls back to the current fixed-mount behavior
+  (fully backward compatible).
+- `DockerSandboxService.start_sandbox()` accepts an optional resolved mount
+  override, applied only for that sandbox instead of `self.mounts`.
+- Reject (400/403) any `workspace_name` not present in the registry — no
+  path ever comes from the client, only a name looked up server-side.
 
 **Additional Context**
 
-Not asserting this must change -- there are reasonable security/isolation
-arguments for keeping mounts server-operator-controlled rather than
-client-selectable (a client-supplied arbitrary host path would need careful
-scoping/allow-listing to avoid an obvious traversal/access risk). Raising
-this primarily to confirm whether it's an intentional constraint or an area
-open to a scoped addition (e.g. a server-side allow-list of nameable
-project roots that a client could pick from by name, without accepting
-arbitrary client-supplied paths).
+Raised while building a native desktop client against the Agent Server API
+locally; every other MVP capability (create conversation, send message,
+stream events, pause/interrupt, workspace-permission preflight) has a
+working API surface — this is the one piece that has none.
